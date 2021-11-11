@@ -1,3 +1,4 @@
+#include "driver/i2c.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -31,6 +32,44 @@
 #include "lwip/sockets.h"
 #include "lwip/sys.h"
 
+#define AHT10_ADDRESS_0X38 0x38 // chip I2C address no.1 for AHT10/AHT15/AHT20, address pin connected to GND
+#define AHT10_ADDRESS_0X39 0x39 // chip I2C address no.2 for AHT10 only, address pin connected to Vcc
+
+#define I2C_MASTER_SCL_IO 9 /*!< GPIO number used for I2C master clock */
+#define I2C_MASTER_SDA_IO 8 /*!< GPIO number used for I2C master data  */
+#define I2C_MASTER_NUM                                                                                                 \
+    0 /*!< I2C master i2c port number, the number of i2c peripheral interfaces available will depend on the chip */
+#define I2C_MASTER_FREQ_HZ 400000   /*!< I2C master clock frequency */
+#define I2C_MASTER_TX_BUF_DISABLE 0 /*!< I2C master doesn't need buffer */
+#define I2C_MASTER_RX_BUF_DISABLE 0 /*!< I2C master doesn't need buffer */
+#define I2C_MASTER_TIMEOUT_MS 1000
+
+#define AHT10_CMD_INIT 0xE1       // Calibration command for AHT10/AHT15
+#define AHT20_CMD_INIT 0xBE       // Calibration command for AHT10/AHT15
+#define AHTX0_CMD_SOFTRESET 0xBA  // Soft reset command
+#define AHTX0_CMD_MEASURMENT 0xAC // Start measurment command
+#define AHTX0_CMD_NORMAL 0xA8     // Normal cycle mode command, no info in datasheet!!!
+
+#define AHTX0_INIT_NORMAL_MODE 0x00 // Enable normal mode
+#define AHTX0_INIT_CYCLE_MODE 0x20  // Enable cycle mode
+#define AHTX0_INIT_CAL_ENABLE 0x08  // Load factory calibration coeff
+#define AHTX0_INIT_CMD_MODE 0x40    // Enable command mode
+
+#define AHTX0_STATUS_CALIBRATED 0x08 // Status bit for calibrated
+#define AHTX0_STATUS_BUSY 0x80       // Status bit for busy
+#define AHTX0_STATUS_REG 0x71
+
+#define AHTX0_DATA_MEASURMENT                                                                                          \
+    0x33                    // No info in datasheet!!! my guess it is DAC resolution, saw someone send 0x00 instead
+#define AHTX0_DATA_NOP 0x00 // No info in datasheet!!!
+
+#define AHTX0_MEASURMENT_DELAY 80 // at least 75 milliseconds
+#define AHTX0_POWER_ON_DELAY 40   // at least 20..40 milliseconds
+#define AHTX0_SOFT_RESET_DELAY 20 // less than 20 milliseconds
+#define AHTX0_CMD_DELAY 350       // at least 300 milliseconds, no info in datasheet!!!
+#define AHTX0_TIMEOUT 1000        // default timeout
+#define AHT10_ERROR 0xFF          // returns 255, if communication error is occurred
+
 #define BROKER_URL "mqtt://demo.thingsboard.io"
 #define BROKER_PORT 1883
 #define TOPIC_TELEMETRY "v1/devices/me/telemetry"
@@ -39,7 +78,6 @@
 #define EXAMPLE_ESP_WIFI_SSID "AnSoft2.4G"
 #define EXAMPLE_ESP_WIFI_PASS "0902246233"
 #define EXAMPLE_ESP_MAXIMUM_RETRY 5
-#define BLINK_LED_RMT 1
 #define BLINK_LED_RMT_CHANNEL 0
 #define BLINK_GPIO 18
 static uint8_t s_led_state = 0;
@@ -58,8 +96,99 @@ static const char *TAG = "template";
 
 static int s_retry_num = 0;
 
-#ifdef BLINK_LED_RMT
 static led_strip_t *pStrip_a;
+
+static esp_err_t __attribute__((unused)) i2c_master_read_slave(i2c_port_t i2c_num, uint8_t *data_rd, size_t size)
+{
+    if (size == 0)
+    {
+        return ESP_OK;
+    }
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    // i2c_master_write_byte(cmd, (AHT10_ADDRESS_0X38 << 1) | I2C_MASTER_READ, 0x1);
+    i2c_master_write_byte(cmd, AHTX0_STATUS_REG, 0x1);
+    if (size > 1)
+    {
+        i2c_master_read(cmd, data_rd, size - 1, 0X0);
+    }
+    i2c_master_read_byte(cmd, data_rd + size - 1, 0X1);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_PERIOD_MS);
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
+static esp_err_t __attribute__((unused)) i2c_master_write_slave(i2c_port_t i2c_num, uint8_t *data_wr, size_t size)
+{
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (AHT10_ADDRESS_0X38 << 1) | I2C_MASTER_WRITE, 0x1);
+    i2c_master_write(cmd, data_wr, size, 0x1);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(i2c_num, cmd, 1000 / portTICK_PERIOD_MS);
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
+static void aht10_init()
+{
+    /* init aht10 sensor */
+    static uint8_t init_reg[] = {AHT10_CMD_INIT, AHTX0_STATUS_CALIBRATED, AHTX0_DATA_NOP};
+    ESP_ERROR_CHECK(i2c_master_write_slave(I2C_MASTER_NUM, init_reg, 3));
+}
+
+/**
+ * @brief i2c master initialization
+ */
+static esp_err_t i2c_master_init(void)
+{
+    int i2c_master_port = I2C_MASTER_NUM;
+
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = I2C_MASTER_SDA_IO,
+        .scl_io_num = I2C_MASTER_SCL_IO,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = I2C_MASTER_FREQ_HZ,
+    };
+
+    i2c_param_config(i2c_master_port, &conf);
+
+    return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
+}
+
+static void aht10_read(int16_t *temperature, int16_t *humidity)
+{
+    /* measure aht10 */
+    static uint8_t measure_reg[] = {AHTX0_CMD_MEASURMENT, AHTX0_DATA_MEASURMENT, AHTX0_DATA_NOP};
+    ESP_ERROR_CHECK(i2c_master_write_slave(I2C_MASTER_NUM, measure_reg, 3));
+
+    /* read aht10 */
+    static uint32_t temp = 0, humi = 0;
+    static uint8_t data[5];
+    ESP_ERROR_CHECK(i2c_master_read_slave(I2C_MASTER_NUM, data, 6));
+    // ESP_LOGI(TAG, "AHT10 status: %d", data[0] & 0x68);
+
+    if ((data[0] & 0x68) == 0x08)
+    {
+        humi = data[1];
+        humi = (humi << 8) | data[2];
+        humi = (humi << 4) | data[3];
+        humi = humi >> 4;
+        humi = (humi * 1000) / 1024 / 1024;
+
+        temp = data[3];
+        temp = temp & 0x0000000F;
+        temp = (temp << 8) | data[4];
+        temp = (temp << 8) | data[5];
+        temp = (temp * 200) / 1024 / 1024 - 50;
+    }
+    *temperature = temp;
+    *humidity = humi;
+    ESP_LOGI(TAG, "AHT10 temperature: %d°C, humidity: %d", temp, humi);
+}
 
 static void log_error_if_nonzero(const char *message, int error_code)
 {
@@ -125,9 +254,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
 static void send_data(void)
 {
+    static int16_t temperature, humidity;
+    aht10_read(&temperature, &humidity);
     cJSON *data = cJSON_CreateObject();
-    cJSON_AddNumberToObject(data, "temperature", esp_random() % 100);
-    cJSON_AddNumberToObject(data, "humidity", esp_random() % 100);
+    cJSON_AddNumberToObject(data, "temperature", temperature);
+    cJSON_AddNumberToObject(data, "humidity", humidity);
     char *post_data = cJSON_PrintUnformatted(data);
     esp_mqtt_client_publish(client, TOPIC_TELEMETRY, post_data, 0, 1, 0);
     cJSON_Delete(data);
@@ -138,38 +269,6 @@ static void mqtt_app_start(void)
 {
     esp_mqtt_client_config_t mqtt_cfg = {
         .uri = BROKER_URL, .port = BROKER_PORT, .username = TOKEN_DEVICE, .password = ""};
-#if CONFIG_BROKER_URL_FROM_STDIN
-    char line[128];
-
-    if (strcmp(mqtt_cfg.uri, "FROM_STDIN") == 0)
-    {
-        int count = 0;
-        printf("Please enter url of mqtt broker\n");
-        while (count < 128)
-        {
-            int c = fgetc(stdin);
-            if (c == '\n')
-            {
-                line[count] = '\0';
-                break;
-            }
-            else if (c > 0 && c < 127)
-            {
-                line[count] = c;
-                ++count;
-            }
-            vTaskDelay(10 / portTICK_PERIOD_MS);
-        }
-        mqtt_cfg.uri = line;
-        printf("Broker url: %s\n", line);
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Configuration mismatch: wrong broker url");
-        abort();
-    }
-#endif
-
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     /* The last argument may be used to pass data to the event handler, in this example mqtt_event_handler */
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
@@ -204,24 +303,6 @@ static void configure_led(void)
     /* Set all LED off to clear all pixels */
     pStrip_a->clear(pStrip_a, 50);
 }
-
-#elif CONFIG_BLINK_LED_GPIO
-
-static void blink_led(void)
-{
-    /* Set the GPIO level according to the state (LOW or HIGH)*/
-    gpio_set_level(BLINK_GPIO, s_led_state);
-}
-
-static void configure_led(void)
-{
-    ESP_LOGI(TAG, "Example configured to blink GPIO LED!");
-    gpio_reset_pin(BLINK_GPIO);
-    /* Set the GPIO as a push/pull output */
-    gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
-}
-
-#endif
 
 static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -318,6 +399,11 @@ void wifi_init_sta(void)
 
 void app_main(void)
 {
+    /* init i2c */
+    ESP_ERROR_CHECK(i2c_master_init());
+    ESP_LOGI(TAG, "I2C initialized successfully");
+
+    aht10_init();
     // Configure Led
     configure_led();
 
