@@ -5,7 +5,6 @@
 
 PROJECT_NAME := template
 
-EXTRA_COMPONENT_DIRS = $(IDF_PATH)/examples/common_components/protocol_examples_common
 EXTRA_COMPONENT_DIRS += $(IDF_PATH)/examples/common_components/led_strip
 
 

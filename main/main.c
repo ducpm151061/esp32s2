@@ -80,6 +80,12 @@
 #define EXAMPLE_ESP_MAXIMUM_RETRY 5
 #define BLINK_LED_RMT_CHANNEL 0
 #define BLINK_GPIO 18
+typedef enum
+{
+    NORMAL_MODE = 0,
+    CYCLE_MODE = 1,
+    CMD_MODE = 2
+} aht_mode_t;
 static uint8_t s_led_state = 0;
 static esp_mqtt_client_handle_t client;
 /* FreeRTOS event group to signal when we are connected*/
@@ -97,6 +103,27 @@ static const char *TAG = "template";
 static int s_retry_num = 0;
 
 static led_strip_t *pStrip_a;
+
+/**
+ * @brief i2c master initialization
+ */
+static esp_err_t i2c_master_init(void)
+{
+    int i2c_master_port = I2C_MASTER_NUM;
+
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = I2C_MASTER_SDA_IO,
+        .scl_io_num = I2C_MASTER_SCL_IO,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = I2C_MASTER_FREQ_HZ,
+    };
+
+    i2c_param_config(i2c_master_port, &conf);
+
+    return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
+}
 
 static esp_err_t __attribute__((unused)) i2c_master_read_slave(i2c_port_t i2c_num, uint8_t *data_rd, size_t size)
 {
@@ -131,34 +158,28 @@ static esp_err_t __attribute__((unused)) i2c_master_write_slave(i2c_port_t i2c_n
     return ret;
 }
 
-static void aht10_init()
+/**
+ * @brief ath10 initialization
+ */
+static void aht10_init(uint8_t mode)
 {
     /* init aht10 sensor */
-    static uint8_t init_reg[] = {AHT10_CMD_INIT, AHTX0_STATUS_CALIBRATED, AHTX0_DATA_NOP};
+    uint8_t init_reg[] = {AHT10_CMD_INIT, AHTX0_INIT_CAL_ENABLE | mode, AHTX0_DATA_NOP};
     ESP_ERROR_CHECK(i2c_master_write_slave(I2C_MASTER_NUM, init_reg, 3));
 }
 
 /**
- * @brief i2c master initialization
+ * @brief ath10 reset
  */
-static esp_err_t i2c_master_init(void)
+static void aht10_reset()
 {
-    int i2c_master_port = I2C_MASTER_NUM;
-
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = I2C_MASTER_SDA_IO,
-        .scl_io_num = I2C_MASTER_SCL_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ,
-    };
-
-    i2c_param_config(i2c_master_port, &conf);
-
-    return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
+    /* reset aht10 sensor */
+    ESP_ERROR_CHECK(i2c_master_write_slave(I2C_MASTER_NUM, (uint8_t *)AHTX0_CMD_SOFTRESET, 1));
 }
 
+/**
+ * @brief ath10 read data
+ */
 static void aht10_read(int16_t *temperature, int16_t *humidity)
 {
     /* measure aht10 */
@@ -403,7 +424,7 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_master_init());
     ESP_LOGI(TAG, "I2C initialized successfully");
 
-    aht10_init();
+    aht10_init(NORMAL_MODE);
     // Configure Led
     configure_led();
 
