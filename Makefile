@@ -5,7 +5,7 @@
 
 PROJECT_NAME := template
 
-EXTRA_COMPONENT_DIRS += $(IDF_PATH)/examples/common_components/led_strip
-
+EXTRA_COMPONENT_DIRS += $(IDF_PATH)/esp-idf-lib/components
+EXCLUDE_COMPONENTS := aht led_strip
 
 include $(IDF_PATH)/make/project.mk

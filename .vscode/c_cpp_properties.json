@@ -6,11 +6,13 @@
             "cppStandard": "c++17",
             "includePath": [
                 "/opt/esp/esp-idf/components/**",
+                "/opt/esp/esp-idf/esp-idf-lib/**",
                 "${workspaceFolder}/**"
             ],
             "browse": {
                 "path": [
                     "/opt/esp/esp-idf/components/**",
+                    "/opt/esp/esp-idf/esp-idf-lib/**",
                     "${workspaceFolder}"
                 ],
                 "limitSymbolsToIncludedHeaders": true
