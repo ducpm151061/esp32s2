@@ -4,8 +4,8 @@
 #define BROKER_PORT 1883
 #define TOPIC_TELEMETRY "v1/devices/me/telemetry"
 #define TOPIC_ATTRIBUTES "v1/devices/me/attributes"
-#define TOKEN_DEVICE "esp8266demo"
-#define ESP_WIFI_SSID "AnSoft2.4G"
+#define TOKEN_DEVICE "esp32s2"
+#define ESP_WIFI_SSID "Ansoft"
 #define ESP_WIFI_PASS "0902246233"
 #define ESP_MAXIMUM_RETRY 5
 
