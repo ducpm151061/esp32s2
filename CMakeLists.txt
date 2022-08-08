@@ -3,6 +3,6 @@
 cmake_minimum_required(VERSION 3.5)
 
 set(EXTRA_COMPONENT_DIRS $ENV{IDF_PATH}/esp-idf-lib/components)
-
+set(IDF_TARGET "esp32s2")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(template)
